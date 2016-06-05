@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# ------- THIS FILE IS UNDER SALT CONTROL -------
+# RU-Center Group
+# Hosting DevOps Dept
+#   <devops-nic@hostcomm.ru>, <devops-hc@hostcomm.ru>
+
+#########################################
+# Script Name:		rrd_graph_uni
+# Author:		Oleg Dambaev <ruroot@gmail.com>, <odambaev@hostcomm.ru>
+# Editor:		None
+
+#########################################
+# CRONTAB THIS
+# */10 * * * * PATH="/sbin:/bin:/usr/sbin:/usr/bin:/usr/games:/usr/local/sbin:/usr/local/bin:/root/bin:/usr/sys/monitoring" lockf -t 0 -s /var/tmp/rrd_graph.lock /usr/sys/monitoring/rrd_graph_uni > /dev/null 2>&1 &
+
+#########################################
+# Commands for script
+# This MUST be checked in main()
+RRDTOOL_CMD=$(which rrdtool)
+
+#########################################
+# Almost in all systems
+# We ignore checking
+SED_CMD=$(which sed)
+GREP_CMD=$(which grep)
+AWK_CMD=$(which awk)
+DATE_CMD=$(which date)
+MKDIR_CMD=$(which mkdir)
+LS_CMD=$(which ls)
+SORT_CMD=$(which sort)
+y_m=$( $DATE_CMD "+%Y_%m" )
+
+#########################################
+# Setup
+RRD_PATH="/home/RRDS"		# store RRDs for users
+RRD_ROLLOVER=30				# hope, month is enough
+RRD_PERIODIC=300				# how often (sec) we plan to run this script from crontab
+					# default: */1 * * * * = 60sec
+RRD_GRAPH_TOP="20"
+
+cd $RRD_PATH
+# Make top 20 by param
+echo "<html>" > index.html
+for par in cpu mem tio
+do
+	echo "<h1>Top-${RRD_GRAPH_TOP} by [ $par ] in interval 3h</h1>" >> index.html
+	echo "<p>Generated: `date "+%Y-%m-%d %H:%M"`</p>" >> index.html
+	for i in *
+	do
+		if [ "x$i" == "xindex.html" ]
+			then
+			echo ignoring
+		else
+			$RRDTOOL_CMD graph /dev/null DEF:x=$i/rrd/${i}_${y_m}.rrd:$par:AVERAGE VDEF:y=x,MAXIMUM PRINT:y:$i/rrd/${i}_${y_m}.rrd=%lf
+		fi
+	done | $GREP_CMD '=' | $SORT_CMD -t'=' -nrk2 | head -${RRD_GRAPH_TOP} | $AWK_CMD -F'/' '{printf "<a href=\"%s\">%s</a><br>\n", $1, $1}' >> index.html
+done
+echo "</html>" >> index.html
+
+for u in *
+do
+	if [ "x$i" == "xindex.html" ]
+		then
+		echo "ignoring"
+	else
+	OUTPUT_PATH="${u}"
+	$MKDIR_CMD -p $OUTPUT_PATH
+	echo "[ $( $DATE_CMD "+%Y-%m-%d %H:%M" ) ] PROCESSING: $u --"
+	echo "<html>" > $OUTPUT_PATH/index.html
+	echo "<p><h1>Usage statistics for $u</h1></p>" >> $OUTPUT_PATH/index.html
+	for INT in 3h 12h 1d 3d 1w
+	do
+		echo "<p><h2>Interval $INT</h2></p>" >> $OUTPUT_PATH/index.html
+		for param in cpu mem tio
+		do
+			PARAM=$( echo $param | tr [:lower:] [:upper:] )
+			$RRDTOOL_CMD graph $OUTPUT_PATH/$param-$INT.png \
+				--start now-$INT --end now --step 300 \
+				-w 400  \
+				--title "User: $u $param [ Interval: $INT ]" \
+				DEF:$param=${u}/rrd/${u}_${y_m}.rrd:$param:AVERAGE \
+				VDEF:${param}max=$param,MAXIMUM \
+				VDEF:${param}avg=$param,AVERAGE \
+				VDEF:${param}min=$param,MINIMUM \
+				LINE1:$param#0000FF:"$PARAM" \
+				LINE1:${param}max#FF0000:"$PARAM max" \
+				LINE1:${param}avg#ffff00:"$PARAM avg" \
+				LINE1:${param}min#228b22:"$PARAM min"
+			echo "<img src=\"$param-$INT.png\" border=0><br><br>" >> $OUTPUT_PATH/index.html
+		done
+		echo "<hr width=\"70%\" align=\"left\">" >> $OUTPUT_PATH/index.html
+	done
+	fi
+	echo "</html>" >> $OUTPUT_PATH/index.html
+done

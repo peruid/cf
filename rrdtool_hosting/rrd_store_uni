@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# ------- THIS FILE IS UNDER SALT CONTROL -------
+# RU-Center Group
+# Hosting DevOps Dept
+#   <devops-nic@hostcomm.ru>, <devops-hc@hostcomm.ru>
+
+#########################################
+# Script Name:		rrd_store_uni
+# Author:		Oleg Dambaev <ruroot@gmail.com>, <odambaev@hostcomm.ru>
+# Editor:		None
+
+######################
+# CRONTAB THIS:
+# */1 * * * * PATH="/sbin:/bin:/usr/sbin:/usr/bin:/usr/games:/usr/local/sbin:/usr/local/bin:/root/bin:/usr/sys/monitoring" lockf -t 0 -s /var/tmp/rrd_store.lock /usr/sys/monitoring/rrd_store_uni > /dev/null 2>&1 &
+
+#########################################
+# Commands for script
+# This MUST be checked in main()
+SA_CMD=$(which sa)
+RRDTOOL_CMD=$(which rrdtool)
+
+#########################################
+# Almost in all systems
+# We ignore checking
+SED_CMD=$(which sed)
+GREP_CMD=$(which grep)
+AWK_CMD=$(which awk)
+DATE_CMD=$(which date)
+MKDIR_CMD=$(which mkdir)
+y_m=$( $DATE_CMD "+%Y_%m" )
+
+#########################################
+# Setup
+RRD_PATH="/home/RRDS"		# store RRDs for users
+RRD_ROLLOVER=30				# hope, month is enough
+RRD_PERIODIC=300			# how often (sec) we plan to run this script from crontab
+					# default: */1 * * * * = 60sec
+
+#########################################
+# Find system accounts
+# Hosting account uid starts from 910 (?)
+EXCLUDES=$( $GREP_CMD -E "\*:([0-9]|[0-9][0-9]|[0-8][0-9][0-9]|9[0-1][0-9]):" /etc/passwd | \
+	$GREP_CMD -vE "^$|^#" | \
+	$AWK_CMD -F: '{printf "%s ", $1} END {printf "\n"}' )
+
+#########################################
+# Functions
+
+# create_sub
+create () {
+# $( sa -m ) produces:
+# login mem cpu tio k*sec
+# /usr/bin/rrdtool create $RRDFILE --step $RRD_PERIODIC \
+#     DS:MEM:COUNTER:1000:0:U \
+#     DS:CPU:COUNTER:1000:0:U \
+#     DS:TIO:COUNTER:1000:0:U \
+#     DS:KSEC:COUNTER:1000:0:U \
+#     RRA:AVERAGE:0.5:1:600000 \
+#     RRA:AVERAGE:0.5:100:60000 \
+#     RRA:AVERAGE:0.5:1000:6000
+  user=$1
+  shift
+
+  $RRDTOOL_CMD create $RRDFILE --step $RRD_PERIODIC \
+    DS:mem:DERIVE:300:0:U \
+    DS:cpu:DCOUNTER:300:0:U \
+    DS:tio:DERIVE:300:0:U \
+    DS:ksec:DERIVE:300:0:U \
+    RRA:AVERAGE:0.5:12:24 \
+    RRA:AVERAGE:0.5:288:31
+}
+
+# update_sub
+update () {
+  # We put to $ENV this variables
+  # $: 1 - user, 2 = mem, 3 = cpu, 4 = tio, 5 = ksec
+  eval `echo $@ | $AWK_CMD '{printf "CTMEM=%s\nCTCPU=%s\nCTTIO=%s\nCTKSEC=%s\n", $2, $3, $4, $5}'`
+  $RRDTOOL_CMD update $RRDFILE N:$CTMEM:$CTCPU:$CTTIO:$CTKSEC
+}
+
+#########################################
+# Main run
+$MKDIR_CMD -p $RRD_PATH
+while read user mem cpu tio ksec
+do
+ if [[ ${EXCLUDES[*]} =~ "$user" ]] # Exclude hosting and system accounts FIXME
+ then
+  echo "Ignoring system account"
+ else
+  re='^[0-9]+$'
+  if [[ $user =~ $re ]]
+    then
+    echo "ignore removed and uid is digital"
+  else
+    RRDFILE="$RRD_PATH/$user/rrd/${user}_${y_m}.rrd"
+    RRDPATH="$RRD_PATH/$user/rrd"
+    echo "[ $( $DATE_CMD "+%Y-%m-%d %H:%M" ) ] PROCESSING: $user --"
+    echo -n "  User's RRD dir "
+    if [ -d $RRDPATH ]
+      then
+      echo "found.."
+      echo -n "  User's RRD file "
+      if [ -f $RRDFILE ]
+        then
+          echo "found. Calling update"
+          update $user $mem $cpu $tio $ksec
+      else
+        echo "not found. Calling create & update"
+        create $user
+        update $user $mem $cpu $tio $ksec
+      fi
+    else
+      echo "not found. Creating dir and skip this time."
+      $MKDIR_CMD -p "$RRD_PATH/$user/rrd"
+    fi
+  fi
+  echo "[ $( $DATE_CMD "+%Y-%m-%d %H:%M" ) ] FINISHED: $user --"
+ fi
+done < <($SA_CMD -m | $SED_CMD -E "s/([0-9.]+)[a-z*]+/\1/g")
