@@ -1,7 +1,0 @@
-Host *.forex-formula.ru
- User admin
-
-
-Host *
- User manitu
- #IdentityFile ~/.ssh/id_rsa
